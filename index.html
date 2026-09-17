@@ -63,6 +63,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
 <script>
+const SUCCESS_MS = 1000;   // '들어옴/나감 확인' 화면을 보여 주는 시간 (1000 = 1초)
 const KEY_URL = 'dongsanApiUrl', KEY_TOKEN = 'dongsanApiToken', KEY_FACING = 'dongsanFacing';
 let API = localStorage.getItem(KEY_URL) || '';
 let TOKEN = localStorage.getItem(KEY_TOKEN) || '';
@@ -152,14 +153,14 @@ function idle() {
   $('guide').textContent = '📇 카드를 네모 안에 비춰 주세요';
 }
 function panel(html) { $('panel').innerHTML = html; $('panel').style.display = 'flex'; }
-function flash(icon, title, sub, color) {
+function flash(icon, title, sub, color, ms) {
   busy = true; clearTimeout(timer);
   panel('<div class="icon"></div><div class="msg"></div><div class="sub"></div>');
   const p = $('panel');
   p.querySelector('.icon').textContent = icon;
   p.querySelector('.msg').textContent = title; p.querySelector('.msg').style.color = color;
   p.querySelector('.sub').textContent = sub || '';
-  timer = setTimeout(idle, 2500);
+  timer = setTimeout(idle, ms || 2500);
 }
 async function handle(text) {
   if (busy) return;
@@ -195,7 +196,7 @@ async function send(id, dir) {
     lastId = id; lastAt = Date.now();
     if (r.revoked) { localStorage.removeItem(KEY_TOKEN); TOKEN = ''; }
     beep(dir === 'in' ? 1320 : 660);
-    flash(r.icon, r.title, r.sub, r.color);
+    flash(r.icon, r.title, r.sub, r.color, SUCCESS_MS);   // 기록 완료 화면 표시 시간
     if (!TOKEN) setTimeout(() => { stopCam(); showSetup('등록이 해제되었습니다.'); }, 2600);
   } catch (e) {
     flash('⚠️', '기록 실패 — 다시 찍어 주세요', e.message, '#C62828');
