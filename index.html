@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>동산학사 출입 체크</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, "Malgun Gothic", "Apple SD Gothic Neo", sans-serif; background: #F4F6F8; color: #222; text-align: center; }
+  .top { background: #1F4E79; color: #fff; padding: 10px; font-size: 20px; font-weight: bold; }
+  #camBox { position: relative; width: 92%; max-width: 520px; margin: 14px auto 0; border-radius: 20px; overflow: hidden; background: #000; aspect-ratio: 4/3; }
+  #cam { width: 100%; height: 100%; object-fit: cover; }
+  #cam.mirror { transform: scaleX(-1); }
+  #frame { position: absolute; inset: 18%; border: 5px solid rgba(255,255,255,.85); border-radius: 18px; }
+  #panel { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; flex-direction: column; background: rgba(255,255,255,.96); padding: 10px; }
+  .msg { font-size: 30px; font-weight: bold; margin: 14px 0 4px; }
+  .sub { font-size: 20px; color: #666; margin: 6px 0; }
+  .icon { font-size: 80px; }
+  .name { font-size: 42px; font-weight: bold; }
+  .btn { display: block; width: 80%; margin: 12px auto; border: 0; border-radius: 22px; color: #fff; font-weight: bold; }
+  .in { background: #2E7D32; } .out { background: #E67E22; }
+  .big { font-size: 48px; padding: 30px 0; } .small { font-size: 34px; padding: 20px 0; opacity: .8; }
+  .tool { font-size: 16px; padding: 10px 14px; margin: 6px 4px; border: 0; border-radius: 12px; background: #607D8B; color: #fff; }
+  #setup { padding: 20px; }
+  #setup input { width: 90%; max-width: 520px; font-size: 18px; padding: 12px; margin: 8px 0; border: 2px solid #999; border-radius: 12px; }
+  #setup .code { font-size: 36px; text-align: center; letter-spacing: 6px; width: 60%; }
+  #kbd { position: absolute; left: -9999px; opacity: 0; }
+</style>
+</head>
+<body>
+<div class="top">🏠 동산학사 출입 체크</div>
+
+<!-- 처음 한 번: 태블릿 등록 -->
+<div id="setup" style="display:none">
+  <div class="msg">태블릿 등록</div>
+  <div class="sub">① [설정] 시트 B3의 웹 앱 주소를 붙여넣으세요</div>
+  <input id="urlIn" placeholder="https://script.google.com/macros/s/.../exec">
+  <div class="sub">② 메뉴 [태블릿 등록 코드 만들기]의 6자리 코드</div>
+  <input id="codeIn" class="code" inputmode="numeric" maxlength="6" placeholder="000000">
+  <button class="btn in small" onclick="doRegister()">등록</button>
+  <div id="setupMsg" class="sub"></div>
+</div>
+
+<!-- 체크 화면 -->
+<div id="main" style="display:none">
+  <div id="camBox">
+    <video id="cam" playsinline muted autoplay></video>
+    <div id="frame"></div>
+    <div id="panel"></div>
+  </div>
+  <div id="guide" class="msg">📇 카드를 네모 안에 비춰 주세요</div>
+  <div class="sub">인식되면 [들어옴] 또는 [나감]을 눌러 주세요</div>
+  <div style="margin-top:14px">
+    <button class="tool" onclick="switchCam()">🔄 앞/뒤 카메라 전환</button>
+    <button class="tool" onclick="goFull()">⛶ 전체 화면</button>
+    <button class="tool" onclick="resetDevice()">⚙️ 등록 다시 하기</button>
+  </div>
+</div>
+<input id="kbd" inputmode="none" autocomplete="off">
+<canvas id="cv" style="display:none"></canvas>
+
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<script>
+const KEY_URL = 'dongsanApiUrl', KEY_TOKEN = 'dongsanApiToken', KEY_FACING = 'dongsanFacing';
+let API = localStorage.getItem(KEY_URL) || '';
+let TOKEN = localStorage.getItem(KEY_TOKEN) || '';
+let facing = localStorage.getItem(KEY_FACING) || 'user';
+let stream = null, busy = false, timer = null, lastId = '', lastAt = 0;
+const $ = id => document.getElementById(id);
+
+/* ── 서버 호출 ── */
+async function call(params) {
+  const q = new URLSearchParams(params).toString();
+  const res = await fetch(API + '?' + q, { method: 'GET', redirect: 'follow' });
+  return res.json();
+}
+
+/* ── 시작 ── */
+async function boot() {
+  if (!API || !TOKEN) return showSetup();
+  try {
+    const r = await call({ action: 'check', token: TOKEN });
+    if (!r.ok) { localStorage.removeItem(KEY_TOKEN); TOKEN = ''; return showSetup('등록이 해제된 기기입니다. 새 코드로 다시 등록하세요.'); }
+  } catch (e) { /* 인터넷이 잠깐 안 될 수 있으니 그대로 진행 */ }
+  showMain();
+}
+function showSetup(msg) {
+  $('main').style.display = 'none'; $('setup').style.display = 'block';
+  $('urlIn').value = API; $('setupMsg').textContent = msg || '';
+}
+async function doRegister() {
+  const url = $('urlIn').value.trim(), code = $('codeIn').value.trim();
+  if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(url)) { $('setupMsg').textContent = '주소는 https://script.google.com 으로 시작하고 /exec 로 끝나야 합니다.'; return; }
+  $('setupMsg').textContent = '등록 중…';
+  API = url;
+  try {
+    const r = await call({ action: 'register', code: code });
+    if (!r.ok) { $('setupMsg').textContent = '❌ ' + r.msg; return; }
+    localStorage.setItem(KEY_URL, url); localStorage.setItem(KEY_TOKEN, r.token); TOKEN = r.token;
+    $('setup').style.display = 'none'; showMain();
+  } catch (e) { $('setupMsg').textContent = '❌ 연결 실패: 주소를 확인하세요 (' + e.message + ')'; }
+}
+function resetDevice() {
+  if (!confirm('이 태블릿의 등록 정보를 지우고 다시 등록할까요?')) return;
+  localStorage.removeItem(KEY_TOKEN); TOKEN = ''; stopCam(); showSetup();
+}
+
+/* ── 카메라 ── */
+async function showMain() {
+  $('main').style.display = 'block';
+  await startCam();
+  keepAwake();
+  focusKbd();
+  setInterval(scanFrame, 200);
+}
+async function startCam() {
+  stopCam();
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 960 } }, audio: false });
+    $('cam').srcObject = stream;
+    $('cam').classList.toggle('mirror', facing === 'user');
+    await $('cam').play();
+    idle();
+  } catch (e) {
+    panel('<div class="icon">📷</div><div class="msg">카메라를 켤 수 없습니다</div><div class="sub">주소창 왼쪽 자물쇠 → 권한 → 카메라 "허용" 후 새로고침</div>');
+  }
+}
+function stopCam() { if (stream) stream.getTracks().forEach(t => t.stop()); stream = null; }
+function switchCam() { facing = facing === 'user' ? 'environment' : 'user'; localStorage.setItem(KEY_FACING, facing); startCam(); }
+function scanFrame() {
+  if (busy || !stream || typeof jsQR === 'undefined') return;
+  const v = $('cam'); if (!v.videoWidth) return;
+  const cv = $('cv'), w = 640, h = Math.round(640 * v.videoHeight / v.videoWidth);
+  cv.width = w; cv.height = h;
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(v, 0, 0, w, h);
+  const qr = jsQR(ctx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: 'dontInvert' });
+  if (qr && qr.data) handle(qr.data);
+}
+
+/* ── 스캐너(키보드) 입력도 지원 ── */
+function focusKbd() { $('kbd').value = ''; $('kbd').focus({ preventScroll: true }); }
+$('kbd').addEventListener('keydown', e => { if (e.key === 'Enter') { const v = $('kbd').value; $('kbd').value = ''; handle(v); } });
+document.addEventListener('click', e => { if (e.target.tagName !== 'BUTTON' && e.target.tagName !== 'INPUT') focusKbd(); });
+
+/* ── 흐름: 인식 → 버튼 → 기록 → 자동 복귀 ── */
+function idle() {
+  busy = false; clearTimeout(timer);
+  $('panel').style.display = 'none';
+  $('guide').textContent = '📇 카드를 네모 안에 비춰 주세요';
+}
+function panel(html) { $('panel').innerHTML = html; $('panel').style.display = 'flex'; }
+function flash(icon, title, sub, color) {
+  busy = true; clearTimeout(timer);
+  panel('<div class="icon"></div><div class="msg"></div><div class="sub"></div>');
+  const p = $('panel');
+  p.querySelector('.icon').textContent = icon;
+  p.querySelector('.msg').textContent = title; p.querySelector('.msg').style.color = color;
+  p.querySelector('.sub').textContent = sub || '';
+  timer = setTimeout(idle, 2500);
+}
+async function handle(text) {
+  if (busy) return;
+  const m = String(text).match(/[?&]id=([A-Za-z0-9]+)/) || String(text).trim().match(/^(S\d{3})$/i);
+  if (!m) return;
+  const id = m[1].toUpperCase();
+  if (id === lastId && Date.now() - lastAt < 5000) return;   // 같은 카드 연속 인식 방지
+  busy = true; beep(880);
+  panel('<div class="msg">확인 중…</div>');
+  try {
+    const r = await call({ action: 'lookup', id: id, token: TOKEN });
+    if (!r.ok) { lastId = id; lastAt = Date.now(); return flash(r.icon || '⚠️', r.title || '확인 실패', '', r.color || '#C62828'); }
+    panel('<div class="name"></div><div class="sub" id="st"></div>' +
+      '<button class="btn in" id="bIn">🏠 들어옴</button><button class="btn out" id="bOut">🚪 나감</button>' +
+      '<div class="sub">10초 안에 눌러 주세요</div>');
+    const p = $('panel');
+    p.querySelector('.name').textContent = r.name;
+    $('st').textContent = (r.last ? '마지막 기록 ' + r.last : '오늘 첫 기록') + (r.status ? ' · ' + r.status : '');
+    $('bIn').className = 'btn in ' + (r.suggestOut ? 'small' : 'big');
+    $('bOut').className = 'btn out ' + (r.suggestOut ? 'big' : 'small');
+    $('bIn').onclick = () => send(id, 'in');
+    $('bOut').onclick = () => send(id, 'out');
+    timer = setTimeout(() => { lastId = id; lastAt = Date.now(); idle(); }, 10000);
+  } catch (e) {
+    flash('⚠️', '인터넷 연결을 확인하세요', e.message, '#C62828');
+  }
+}
+async function send(id, dir) {
+  clearTimeout(timer);
+  panel('<div class="msg">기록 중…</div>');
+  try {
+    const r = await call({ action: 'record', id: id, dir: dir, token: TOKEN });
+    lastId = id; lastAt = Date.now();
+    if (r.revoked) { localStorage.removeItem(KEY_TOKEN); TOKEN = ''; }
+    beep(dir === 'in' ? 1320 : 660);
+    flash(r.icon, r.title, r.sub, r.color);
+    if (!TOKEN) setTimeout(() => { stopCam(); showSetup('등록이 해제되었습니다.'); }, 2600);
+  } catch (e) {
+    flash('⚠️', '기록 실패 — 다시 찍어 주세요', e.message, '#C62828');
+  }
+}
+
+/* ── 편의 기능 ── */
+let actx = null;
+function beep(freq) {
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.frequency.value = freq; o.connect(g); g.connect(actx.destination);
+    g.gain.setValueAtTime(0.15, actx.currentTime); o.start(); o.stop(actx.currentTime + 0.12);
+  } catch (e) {}
+}
+async function keepAwake() {
+  try { if ('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch (e) {}
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { keepAwake(); if (TOKEN && !stream) startCam(); } });
+function goFull() { const d = document.documentElement; (d.requestFullscreen || d.webkitRequestFullscreen || function(){}).call(d); }
+
+boot();
+</script>
+</body>
+</html>
